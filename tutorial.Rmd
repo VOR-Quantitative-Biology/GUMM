@@ -1,0 +1,174 @@
+---
+title: "Single cell genotyping using GUMM tutorial"
+author: "Matt Ung"
+date: "2023-05-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(aws.s3)
+library(devtools)
+library(plotly)
+library(readr)
+library(vcfR)
+
+install("/home/rstudio/data/bitbucket/sandbox-matt/rpackages/GUMM")
+load_all("/home/rstudio/data/bitbucket/sandbox-matt/rpackages/GUMM")
+
+```
+
+# Read in CRISPResso allele file
+```{r read_in_data_from_s3}
+
+s3_path <- "s3://vorbio-analysis/missionbio/230718-VTYM5-00528/2.0.1/CRISPRessoWGS/GA-35bi-55het-10wt-nice/CRISPRessoWGSResults/CombinedResults/AllSAMPLES.DetailedAlignment.txt"
+
+af_data <- aws.s3::s3read_using(FUN = readr::read_delim, object = s3_path)
+#af_data <- dplyr::filter(af_data, TargetID %in% "Chd2")
+
+barcodes <- af_data %>%
+  dplyr::group_by(Sample) %>%
+  dplyr::summarize(coverage = sum(`#Reads`)) %>%
+  dplyr::filter(coverage >= 10) %>%
+  dplyr::pull(Sample)
+
+```
+
+# Clean data
+
+Pre-process data
+
+```{r clean_data, echo=FALSE}
+
+cleaned_crispresso_allele_df <- GUMM::clean_crispresso_output(af_data, af_cutoff = 0, allele_read_coverage_threshold = 0, ignore_subs = TRUE, update_unmodified_allele_sequence = TRUE) %>%
+  dplyr::filter(sample %in% barcodes)
+
+```
+
+# Genotype cells using GUMM
+
+```{r genotype}
+
+myhoms <- GUMM::find_homs(cleaned_crispresso_allele_df, output_model_fit = TRUE, prob = 0.99)
+myhets <- GUMM::find_putative_hets(cleaned_crispresso_allele_df, hom_object = myhoms, output_model_fit = TRUE, prob_multiplet = 0.95)
+
+top_alleles <- GUMM::analyze_alleles(crispresso_allele_df = af_data, ignore_subs = TRUE)
+patterns <- top_alleles$edited_allele_pattern[top_alleles$percent_reads > 1]
+
+myref_hets <- GUMM::refine_hets(cleaned_crispresso_allele_df, 
+                                putative_het_object = myhets, 
+                                allele_features = patterns, 
+                                output_model_fit = TRUE, 
+                                prob_multiplet = 0.99)
+                                
+plotly::plot_ly(data = myref_hets$data,
+                x = ~PC1,
+                y = ~PC2,
+                text = ~sample,
+                color = ~gmm_confident_het,
+                sizes = 0.04)
+
+```
+
+# Aggregate results
+```{r agg_res}
+
+myres <- dplyr::full_join(myhoms$data, myhets$data, by = "sample") %>%
+  dplyr::full_join(myref_hets$data, by = "sample") %>%
+  dplyr::select(sample, gmm_hom, gmm_het, gmm_confident_het) %>%
+  dplyr::mutate(predict_genotype = case_when(gmm_hom %in% "homozygous_edit" ~ "Hom edit",
+                                             gmm_hom %in% "WT" ~ "WT",
+                                             gmm_het %in% "transparent_multiplet" ~ "Transparent multiplet",
+                                             gmm_confident_het %in% "confident_heterozygous" ~ "Het",
+                                             TRUE ~ "Opaque multiplet"))
+
+stopifnot(length(unique(cleaned_crispresso_allele_df$sample)) == length(unique(myres$sample)))
+
+DT::datatable(myres, rownames = FALSE)
+
+```
+
+# Estimate sample composition
+```{r}
+
+genotype_alleles_map <- GUMM::get_genotype_alleles(cleaned_crispresso_allele_df, 
+                                                   hom_barcodes = unlist(myhoms$homozygous_barcodes),
+                                                   het_barcodes = myref_hets$confident_heterozygous_barcodes)
+
+cell_genotypes <- dplyr::select(myres, sample, predict_genotype) %>%
+  distinct()
+
+GUMM::estimate_sample_composition(cleaned_crispresso_allele_df,
+                                  cell_genotypes,
+                                  genotype_alleles_map,
+                                  multiplet_handling = "remove")
+
+```
+
+# Compare with DoubletD
+
+```{r doubletD}
+
+vcf_path <- "s3://vorbio-analysis/missionbio/230222-L22M5-00393/2.0.1/tapestri_pipeline/GA-35bi-55het-10wt/output/results/vcf/GA-35bi-55het-10wt.cells.vcf.gz"
+vcf_df <- aws.s3::s3read_using(FUN = vcfR::read.vcfR, object = vcf_path) %>%
+  vcfR::vcfR2tidy()
+
+chrom_map <- dplyr::select(vcf_df$fix, ChromKey, CHROM) %>%
+  dplyr::distinct()
+cell_gt <- dplyr::left_join(vcf_df$gt, chrom_map, by = "ChromKey") %>%
+  filter(gt_GQ >= 99) %>%
+  unite(variant, CHROM, POS, sep = ":", remove = FALSE) 
+
+ad <- cell_gt %>%
+  dplyr::select(Indiv, variant, gt_AD) %>%
+  unique() %>%
+  mutate(gt_AD = as.numeric(gsub("\\,.*", "", gt_AD))) %>%
+  pivot_wider(names_from = variant, values_from = gt_AD, values_fill = 0) %>%
+  dplyr::rename(cell_id = Indiv)
+
+ad_cll1 <- cell_gt %>%
+  filter(CHROM == "chr12", POS >= 9979471, POS <= 9979490) %>%
+  dplyr::select(Indiv, variant, gt_AD) %>%
+  unique() %>%
+  mutate(gt_AD = as.numeric(gsub("\\,.*", "", gt_AD))) %>% 
+  pivot_wider(names_from = variant, values_from = gt_AD, values_fill = 0) %>%
+  dplyr::rename(cell_id = "Indiv")
+
+dp <- cell_gt %>%
+  dplyr::select(Indiv, variant, gt_DP) %>%
+  unique() %>%
+  mutate(gt_DP = as.numeric(gsub("\\,.*", "", gt_DP))) %>%
+  pivot_wider(names_from = variant, values_from = gt_DP, values_fill = 0) %>%
+  dplyr::rename(cell_id = Indiv)
+
+dp_cll1 <- cell_gt %>%
+  filter(CHROM == "chr12", POS >= 9979471, POS <= 9979490) %>%
+  dplyr::select(Indiv, variant, gt_DP) %>%
+  unique() %>%
+  mutate(gt_DP = as.numeric(gsub("\\,.*", "", gt_DP))) %>%
+  pivot_wider(names_from = variant, values_from = gt_DP, values_fill = 0) %>%
+  dplyr::rename(cell_id = Indiv)
+
+readr::write_csv(ad, "AD.csv")
+readr::write_csv(dp, "DP.csv")
+readr::write_csv(ad_cll1, "AD_CLL1.csv")
+readr::write_csv(dp_cll1, "DP_CLL1.csv")
+
+cmd <- "doubletd --inputAlternate /home/rstudio/data/project_workspace/external/doubletD/AD_CLL1.csv --inputTotal /home/rstudio/data/project_workspace/external/doubletD/DP_CLL1.csv --delta 0.2 --beta 0.05 -o /home/rstudio/data/project_workspace/external/doubletD/results/prediction.tsv"
+system(cmd)
+
+doubletD <- readr::read_tsv("/home/rstudio/data/project_workspace/external/doubletD/results/prediction.tsv") %>%
+  dplyr::rename(sample = cell_id)
+
+myres <- myres %>%
+  dplyr::left_join(doubletD, by = "sample") %>%
+  dplyr::mutate(gmm_prediction = ifelse(!gmm_hom %in% "heterozygous_or_multiplet" | gmm_confident_het %in% "confident_heterozygous", "singlet", "doublet"))
+
+myres_filt = filter(myres, gmm_het != "transparent_multiplet")
+
+```
+
+

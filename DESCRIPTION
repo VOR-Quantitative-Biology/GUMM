@@ -1,0 +1,20 @@
+Package: GUMM
+Type: Package
+Title: GUMM: Genotyping Using Mixture Models
+Version: 0.1.0
+Author: Matthew H. Ung
+Maintainer: Matthew H. Ung <mung@vorbio.com>
+Description: Package interfaces with the output of CRISPResso to automate single cell genotyping using a Gaussian mixture model framework. Identifies homozygous cells, heterozygous cells, transparent multiplets, and opaque multiplets. Method was developed and evaluated using a "ground truth" gene editing droplet-based scDNAseq dataset.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Imports: 
+    dplyr,
+    glue,
+    janitor,
+    tibble,
+    tidyr,
+    mclust,
+    stringr,
+    mixsmsn
+RoxygenNote: 7.2.3
