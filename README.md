@@ -15,4 +15,4 @@ remotes::install_bitbucket("VOR-Quantitative-Biology/GUMM")
 ```sh
 library(GUMM)
 ```
-If publishing research using GUMM, please cite this [preprint](https://www.biorxiv.org/content/10.1101/2025.05.22.653824v1)
+If publishing research using GUMM, please cite this [preprint](https://www.biorxiv.org/content/10.1101/2025.05.22.653824v1). Data for this manuscript can be accessed via Zenodo under doi:10.5281/zenodo.15398817.
