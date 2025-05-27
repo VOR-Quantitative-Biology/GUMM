@@ -9,12 +9,10 @@ This R package interfaces with [CRISPResso2](https://github.com/pinellolab/CRISP
 ### Installation
 **1. Install package using remotes**
 ```sh
-remotes::install_bitbucket("vor-compbio/GUMM")
+remotes::install_bitbucket("VOR-Quantitative-Biology/GUMM")
 ```
-<br/>
 **2. Load package in R**
 ```sh
 library(GUMM)
 ```
-<br/><br/><br/>
 If publishing research using GUMM, please cite this [preprint](https://www.biorxiv.org/content/10.1101/2025.05.22.653824v1)
